@@ -3,7 +3,8 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import time
 
-# Function to scrape data from a table
+# General function to scrape data from a table
+# Start by making sure you can connect and find the table, then, if possible, return the table
 def scrape_table(session, url):
     try:
         response = session.get(url)
@@ -31,7 +32,7 @@ def scrape_table(session, url):
         year = (url.split('/')[-1])
         year = int(year.split("-")[0])
         
-        # Add conference and year columns to the DataFrame
+        # Add conference and year columns to our extracted data
         # MIGHT WANT TO CHANGE THIS IF YOU ARE NOT DOING COLLEGE WORK
         data[0]['Conference'] = conference
         data[0]['Year'] = year
@@ -62,31 +63,28 @@ request_counter = 0
 # Maximum requests before creating a new session
 max_requests_before_new_session = 15
 
-# Combine data from multiple tables into one dataframe
 combined_data = pd.DataFrame()
 
 # Create a session
 session = requests.Session()
 
-# Loop through each URL
 for url in urls:
     print("Processing URL:", url)
-    
-    # Scrape data and append to the combined_data dataframe
+
+    # Scrape the data from the table at the given URL, then add it to our overarching dataframe
     table_data = scrape_table(session, url)
     combined_data = pd.concat([combined_data, table_data], ignore_index=True)
     
-    # Increment the request counter
     request_counter += 1
     
-    # Check if it's time to create a new session
+    # Check if it's time to create a new session; if it is, then do so
     if request_counter >= max_requests_before_new_session:
-        session.close()  # Close the current session
-        session = requests.Session()  # Create a new session
-        request_counter = 0  # Reset the request counter
+        session.close() 
+        session = requests.Session()  
+        request_counter = 0  
     
-    # Introduce a delay of 3.01 seconds to avoid making over 20 requests per minute
+    # Introduce a delay of 3.01 seconds to avoid making 20+ requests per minute
     time.sleep(3.01)
 
-# Save the combined data to a CSV file or process it further in R
+# Save the combined data to a CSV file to process it further in R
 combined_data.to_csv('cfb_p5_adv_data.csv', index=False)
