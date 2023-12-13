@@ -1,0 +1,323 @@
+---
+title: "Examining Differences in Offensive and Defensive Production Across Power 5 College Football Conferences from 2014-2023"
+author: "Cael Elmore"
+date: "12-13-2023"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: false
+    number_sections: false
+documentclass: article
+classoption: titlepage
+header-includes:
+  - \usepackage[margin=1in]{geometry}
+---
+\maketitle
+
+\newpage
+
+```{r setup, include=FALSE}
+library(NSM3)
+library(tidyverse)
+library(mosaic) 
+library(bootstrap)
+library(nsm3data)
+library(pgirmess)
+library(SuppDists)
+library(ggplot2)
+library(Stat2Data)
+library(agricolae)
+library(Rfit)
+library(car)
+
+defense = read.csv("cfb_p5_defensive_data.csv")
+offense = read.csv("cfb_p5_offensive_data.csv")
+adv_data = read.csv("cfb_p5_adv_data.csv")
+```
+
+# Problem Statement
+
+Over the past decade, there has been a heated debate in the college football world about which conference is superior to the rest. In terms of national championships, the Southeastern Conference has been dominant, winning all but two of the last ten national championships. However, does this mean that the SEC has the best football out of all the conferences? Or is it a reflection of the dominance of the top teams in the SEC, while the rest of the conference lags behind?
+
+With the college football conference landscape crumbling as new media rights deals for the Big Ten and SEC loom, this analysis aims to examine the offensive and defensive production across the Power 5 conferences over the past decade. The data were collected from Sports Reference's college football conference summaries dating back to 2014, when the Big Ten added Rutgers and Maryland, marking the end of the early 2010s conference realignment era. Additionally, the data includes Notre Dame's one-year membership in the ACC in 2020, as well as the inclusion of BYU, Houston, UCF, and Cincinnati in the Big 12 in 2023.
+
+Both parametric and nonparametric methods will be used to assess whether there are any differences in defensive and offensive yards per game across the conferences. Subsequently, if applicable, multiple comparisons procedures will be utilized to identify which conferences outperformed the others. However, it is challenging to determine the independence between offensive and defensive production by conference. For example, is Iowa's offense bad, or is it just that Big Ten defenses are stronger than those in other conferences? To account for this variability, we will conduct similar analyses using Sports Reference's yards per play adjusted for the strength of the opponent. This approach ensures that all teams are placed on a level playing field, allowing for a true comparison of the strength of their defenses and offenses. It also accounts for variations in conference strength from year to year.
+
+# One-Way Analysis of Variance and Multiple Comparisons
+
+First, we will examine whether there are any differences across the conferences in terms of their offensive and defensive production on a per game basis.
+
+In the parametric setting, this analysis is conducted using a one-way analysis of variance (ANOVA) test. The conditions for ANOVA require that the data for each level (in this case, each conference) are normally distributed, have constant variance, and are independent of each other. Upon visual inspection of density plots for each conference's offensive and defensive yards per game, it is evident that the totals for each conference are, for the most part, normally distributed.
+
+```{r, echo=FALSE, fig.width = 5, fig.height=3, fig.align='center'}
+ggplot(data = defense, aes(x = TotYds, fill = Conference)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density Plot for Defensive Total Yards Per Game") +
+  facet_grid(Conference ~ ., scales = "free")
+
+ggplot(data = offense, aes(x = TotYds, fill = Conference)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density Plot for Offensive Total Yards Per Game") +
+  facet_grid(Conference ~ ., scales = "free")
+```
+
+
+We can also verify whether the data from each conference are normally distributed by conducting Kolmogorov-Smirnov tests to compare the data with the normal distribution having the same mean and variance. The Kolmogorov-Smirnov test is utilized to detect differences between two given distributions. In this context, the null hypothesis assumes that our data follow a normal distribution with the mean and variance of our underlying data, while the alternative hypothesis suggests that they differ in some way, whether that be scale, location, and/or shape. For example, the mean offensive yards per game for the Big Ten is 382.0171, with a standard deviation of 60.15984. We will compare the actual distribution of the Big Ten's offensive data to the normal distribution with a mean of 382.0171 and a standard deviation of 60.15984 to determine if there are any differences between the two distributions.
+
+```{r, echo=F, include=F}
+unique_conferences <- unique(offense$Conference)
+for (conf in unique_conferences) {
+  off_subset <- offense$TotYds[offense$Conference == conf]
+  def_subset <- defense$TotYds[defense$Conference == conf]
+  
+  suppressWarnings({
+    ks_test_result_off <- ks.test(off_subset, "pnorm", mean(off_subset),
+                sd(off_subset), exact=TRUE)$p.value
+  
+    print(paste("Offense p-value:", conf))
+    print(ks_test_result_off)
+    
+    ks_test_result_def <- ks.test(def_subset, "pnorm", mean(def_subset),
+                          sd(def_subset), exact=TRUE)$p.value
+    
+    print(paste("Defense p-value:", conf))
+    print(ks_test_result_def)
+  })
+
+}
+```
+After conducting the Kolmogorov-Smirnov tests, we fail to reject the null hypothesis in every case, as all of our p-values are greater than our significance level of 0.05. Therefore, we have sufficient evidence to conclude that the distribution of offensive and defensive yards per game for each conference follows a normal distribution.
+
+Additionally, the old rule of thumb that the largest standard deviation must not be larger than double the smallest standard deviation may be used to assess this condition of equal variance. For our data, we satisfy this test as well.
+
+```{r, echo=F}
+favstats(offense$TotYds~offense$Conference)
+favstats(defense$TotYds~defense$Conference)
+```
+
+
+To check if the equal variance condition is met, we can perform the Miller Jackknife procedure for each unique pair of conferences. The Miller Jackknife procedure tests whether the scale parameter of two distinct populations, X and Y, is equal to 1. In other words, if you have two populations X and Y that have the same general form, we are testing whether or not $\gamma^2 = \frac{\text{var}(X)}{\text{var}(Y)}.$ To conduct this testing, each pair of conferences will be considered, and their Miller Jackknife Q statistic will be calculated and then converted to a p-value. If the resulting p-value is below 0.05, we will have sufficient evidence to conclude that there are differences in variances between the two populations. Otherwise, we will conclude that there are equal variances between the two populations.
+
+```{r, echo=F}
+p_values_off <- matrix(NA, nrow = length(unique_conferences), ncol = length(unique_conferences))
+
+p_values_def <- matrix(NA, nrow = length(unique_conferences), ncol = length(unique_conferences))
+
+for (i in 1:(length(unique_conferences) - 1)) {
+  for (j in (i + 1):length(unique_conferences)) {
+    # Select data for the current pair of conferences, perform Miller Jackknife, store the results in our matrix
+    off_i <- offense$TotYds[offense$Conference == unique_conferences[i]]
+    off_j <- offense$TotYds[offense$Conference == unique_conferences[j]]
+    
+    result <- MillerJack(off_i, off_j)
+      
+    p_values_off[i, j] <- pnorm(-abs(result))
+
+    # Perform the same operation for our defensive data
+    def_i <- defense$TotYds[defense$Conference == unique_conferences[i]]
+    def_j <- defense$TotYds[defense$Conference == unique_conferences[j]]
+    
+    result <- MillerJack(def_i, def_j)
+      
+    p_values_def[i, j] <- pnorm(-abs(result))
+  }
+}
+
+print(unique_conferences)
+print(p_values_off)
+print(p_values_def)
+```
+For our offensive data, every comparison involving the Big 12 resulted in a p-value below 0.05, indicating that the Big 12's total yards per game exhibit a statistically significant different variance when compared to the rest of the Power 5 conferences. For all the other offensive comparisons and defensive comparisons, the p-values were above 0.05. So, when it comes to the offensive yards per game data, having constant variance is a minor concern (but not a critical one, necessarily). For the defensive data, we have sufficient evidence to conclude the equal variance condition is met.
+
+The independence condition is a tough nut to crack. Most games are played within a conference, as teams typically play eight or nine games against other teams within their own conference. Outside of those conference games, most Power 5 schools elect to play a schedule games against weaker Group of 5 or FCS schools to boost their records, but there are also out-of-conference matchups against other Power 5 schools on occasion. Because offense and defense are both present on the field simultaneously, it is evident that one team's offensive performance affects their opponent's defensive performance, and vice versa. However, since most games are played within a specific conference and the outcomes of one conference's games generally do not impact the games of other conferences, we will proceed with our ANOVA analysis.
+
+For these tests on offensive and defensive production, the null hypotheses state that there are no significant differences in the mean offensive and defensive yards per game across the Power 5 college football conferences. In other terms, 
+\[ H_0: \mu_1 = \mu_2 = \mu_3 = \mu_4 = \mu_5 \]
+where
+\(\mu_1, \mu_2, \mu_3, \mu_4, \mu_5\) are the population means for the offensive and defensive yards per game for the five conferences.
+
+After running one-way ANOVA tests for both offensive and defensive production, we are able to reject both null hypotheses. We have sufficient evidence to suggest there are cross-conference differences in mean offensive and defensive yards per game. For the offensive data, this is the result of a test statistic of F = 15.93 with 4 and 640 df, and a p-value of 1.95e-12. For the defensive data, we got a test statistic of F = 12.22 with 4 and 640 df, and a p-value of 1.39e-09.
+
+```{r, echo=FALSE}
+offTotYds <- aov(TotYds~Conference, data = defense)
+defTotYds <- aov(TotYds~Conference, data = offense)
+
+cat("Offensive ANOVA Test:\n")
+summary(offTotYds)
+
+cat("\n\nDefensive ANOVA Test:\n")
+summary(defTotYds)
+```
+
+As a result of rejecting the null hypothesis that all the conferences have equal means for both offensive and defensive yards per game, we can conduct follow-up multiple comparisons procedures. In the parametric setting, this comes in the form of Tukey's Honestly Significant Difference Test (HSD). After performing such an analysis, we identify the following groups:
+
+```{r, echo=FALSE}
+HSD.test(offTotYds, "Conference", group=TRUE)$groups
+```
+For the offensive data, we see that the Big 12 and Pac-12 had offenses superior to those of the ACC, SEC, and Big Ten. Was this the result of simply better offense, or just worse defense?
+
+After performing the same test procedure on our defensive data, it is tough to tell.
+```{r, echo=FALSE}
+HSD.test(defTotYds, "Conference", group=TRUE)$groups
+```
+The Big 12 had the worst defenses in terms of mean yards per game, but they were not significantly different from the defenses in the Pac-12 and the SEC. The Big Ten, on the other hand, clearly had the best-performing defenses, as their defenses allowed fewer total yards per game compared to every other conference with statistical significance.
+
+# Adjusting for Opponents
+
+These results only leave us with further questions. Are the differences in offensive production the result of the Big Ten simply having better defenses than the Big 12, or the Big 12 having better and more explosive offensive schemes? Air raid schemes have long reigned supreme in the Big 12, with the wild success of Lincoln Riley's mid-decade Oklahoma teams led by Baker Mayfield and Kyler Murray coming to mind. Disciples of Mike Leach, one of the fathers of the air raid offense, coached at Texas Tech when a quarterback named Patrick Mahomes played in Lubbock.
+
+The Big Ten, on the other hand, has long been known as a smashmouth conference with formidable defenses throughout the entire conference. Nebraska, for example, attempted to usher in a West Coast style of offense, first with Mike Riley's pro/air raid hybrid before transitioning to Scott Frost's spread option offense that made the Oregon teams of the early 2010s so deadly. Both experiments were a resounding failure. Perhaps this was a result of turmoil in the athletic department or poor coaching (or both), or maybe it was a result of Big Ten defenses outsmarting and overpowering supposed "explosive" offensive schemes. Ohio State, with its history of successful collegiate quarterbacks over the last decade, implemented a highly effective air raid-style offense, but not without Brian Hartline's exceptional wide receiver recruiting and performance.
+
+To accurately determine which conferences had the most potent offenses and defenses over the past decade, we need to utilize metrics that account for the strength of the opposition.
+
+Fortunately, Sports Reference collects and calculates its own data for offensive and defensive yards per play adjusted for the strength of the opposition. Originally, yards per game was used as the metric of interest. If we are trying to determine which teams are the most "explosive," certainly a team that gains ten or more yards per play will be considered explosive. However, if that team consistently lets the play clock run down before snapping the ball, they will not be as explosive as a team gaining ten or more yards per play while running a no-huddle offense. So, using yards per game accounts for potential variations in pace of play when addressing the question of explosiveness. Sports Reference did not track yards per game adjusted for the strength of the opposition, but rather yards per play. While there is something to be argued about which approach is better, it is possible that using these advanced metrics will reveal meaningful differences, in addition to the simple cumulative statistics used above.
+
+After conducting similar exploratory data analyses to confirm normality and constant variance across the conferences, it was verified that the conditions for ANOVA testing were met.
+
+The resulting ANOVA tests revealed that there were differences in mean offensive and defensive yards per play adjusted for the strength of the opposition. For the offensive data, we reject the null hypothesis as we observe an F-statistic of 8.952 with 4 and 640 df, and a p-value of 4.88e-07 < 0.05. For the defensive data, we reject the null hypothesis as we observe an F-statistic of 5.447 with 4 and 640 df, and a p-value of 0.000257 < 0.05.
+```{r, echo = FALSE}
+offAdjYds <- aov(TotOff~Conference, data = adv_data)
+defAdjYds <- aov(TotDef~Conference, data = adv_data)
+
+cat("Offensive (Opponent-Adjusted) ANOVA Test:\n")
+summary(offAdjYds)
+
+cat("\n\nDefensive (Opponent-Adjusted) ANOVA Test:\n")
+summary(defAdjYds)
+```
+
+Now, to see what groups exist for strength-adjusted per play offensive production, we will against use Tukey's HSD.
+
+```{r, echo=FALSE}
+HSD.test(offAdjYds, "Conference", group=TRUE)$groups
+```
+On a per-play basis, we observe that, when considering the strength of the opposition, the Big Ten does indeed have significantly worse offenses compared to both the Big 12 and the SEC. The SEC has offenses that are considered to be on par with the high-flying offenses of the Big 12 and the Pac-12. Interestingly, the SEC has the highest average opponent-adjusted yards per play, even though it also has the best average defensive performance.
+```{r, echo=FALSE}
+HSD.test(defAdjYds, "Conference", group=TRUE)$groups
+```
+
+As it turns out, the only conference with a significantly better defense than any of the others is the SEC. Defensive production in the Big Ten is not significantly different than any of the other conference. The only significant differences exist between the SEC and the Big 12, Pac-12, and ACC. Perhaps this result is a true indication that, overall, the SEC truly has the best combination of offense and defense among the Power 5 conferences. Additionally, since these metrics are adjusted for the strength of the opposition, the differences between the groups may be attributed to how highly Sports Reference ranks SEC schools in comparison to the other conferences. In terms of total yards per game, the Big Ten appeared to be the top conference, but when considering these adjusted statistics, it is no different from any other conference. Again, this result may have arisen from pace-of-play differences between the Big Ten and the other conferences, or perhaps their strong defenses are the result of weak offenses, as indicated by their position in the adjusted offensive yards per play rankings.
+
+# A Non-Parametric Approach to Solving the Problem
+
+This issue of identifying which conferences have the most explosive offenses and defenses can be addressed using alternative non-parametric methods. Non-parametric methods are advantageous because they allow for analyses that are not dependent on the distribution of the underlying data. For this reason, these methods are referred to as "distribution-free" methods.
+
+To see if there are any differences in median adjusted offensive and defensive yards per play, we can initially conduct the Kruskal-Wallis test on the data, using the conferences as the grouping variable. This test is analogous to the one-way ANOVA test, but it does not require that the underlying data follow a normal distribution. It does require that each group's distributions come from the same distribution family and that the variances across the groups remain rather constant.
+
+One way to ensure constant variance across our groups is by using the Fligner-Killeen test. The Fligner-Killeen test is a non-parametric method used to assess the equality of variances across groups. It is especially useful when the underlying data do not follow a normal distribution. While we previously established that our data were normally distributed within each group, we can still use this test to ensure constant variance across all groups.
+
+For this test, the null hypothesis states that all the variances are equal.
+
+\[
+H_0: \sigma_{\text{B1G-Off}}^2 = \sigma_{\text{ACC-Off}}^2 = \sigma_{\text{Pac-12-Off}}^2 = \sigma_{\text{Big 12-Off}}^2 = \sigma_{\text{SEC-Off}}^2
+\]
+
+\[
+H_0: \sigma_{\text{B1G-Def}}^2 = \sigma_{\text{ACC-Def}}^2 = \sigma_{\text{Pac-12-Def}}^2 = \sigma_{\text{Big 12-Def}}^2 = \sigma_{\text{SEC-Def}}^2
+\]
+
+The alternative hypothesis states that not all the variances are equal.
+
+\[
+H_a: \text{At least two of } \sigma_{\text{B1G-Off}}^2, \sigma_{\text{ACC-Off}}^2, \sigma_{\text{Pac-12-Off}}^2, \sigma_{\text{Big 12-Off}}^2, \sigma_{\text{SEC-Off}}^2 \text{ are different.}
+\]
+
+\[
+H_a: \text{At least two of } \sigma_{\text{B1G-Def}}^2, \sigma_{\text{ACC-Def}}^2, \sigma_{\text{Pac-12-Def}}^2, \sigma_{\text{Big 12-Def}}^2, \sigma_{\text{SEC-Def}}^2 \text{ are different.}
+\]
+
+The results of our test are as follows:
+```{r, echo=FALSE}
+cat("Offensive Results:\n")
+fligner.test(adv_data$TotOff, adv_data$Conference)
+cat("\nDefensive Results:\n")
+fligner.test(adv_data$TotDef, adv_data$Conference)
+```
+For both tests, we fail to reject the null hypothesis. For our offensive data, we observe chi-squared = 3.3882, df = 4, p-value = 0.4951 > 0.05. For our defensive data, we observe chi-squared = 9.134, df = 4, p-value = 0.05784 > 0.05. So, we have sufficient evidence to conclude that the variances are equal across the conferences for both the offensive and defensive data. However, for the defensive data, the p-value is extremely close to 0.05, so while we fail to reject the null hypothesis, our variances likely have more differences in the defensive data than the offensive. 
+
+An alternative to the Fligner-Killeen test is Levene's test, which also tests for equal variance across groups. The Fligner-Killeen is useful regardless of the distribution of the underlying data, but Levene's test is usually more sensitive to departures from normality. In our case, our data are normally distributed, so this is not that big of an issue for us.
+
+```{r, echo=F}
+cat("Offensive Test:\n")
+leveneTest(TotOff~as.factor(Conference), data=adv_data)
+cat("\nDefensive Test:\n")
+leveneTest(TotDef~as.factor(Conference), data=adv_data)
+```
+It turns out, however, that Levene's test indicates that our defensive groups have unequal variances, suggesting that at least two of the conferences have significantly different variances from each other. As with the previous test, the p-value in this case is close to 0.05. In this instance, the value is below 0.05, but in the Fligner-Killeen test, it was above 0.05. As a result, we must tread cautiously when proceeding to further analysis with the Kruskal-Wallis test.
+
+With the equal variance assumption somewhat taken care of, we can proceed to our Kruskal-Wallis test. For that test, we are looking to see whether any of the conferences have a median that differs from the overall median, or if any of the conferences have a treatment effect that differs from those of the other conferences. So, for this test,
+
+\[
+H_0: \tau_{B1G} = \tau_{Big 12} = \tau_{SEC} = \tau_{ACC} = \tau_{PAC-12}
+\]
+
+\[
+H_a: \text{at least one } \tau_i \text{ differs from the rest}
+\]
+
+Running these tests for the adjusted offensive and defensive yards per play, we yield the following results:
+```{r}
+kruskal.test(adv_data$TotOff, adv_data$Conference)
+kruskal.test(adv_data$TotDef, adv_data$Conference)
+```
+With both tests yielding p-values well below 0.05, we have sufficient evidence to conclude that there are differences across the conferences in terms of adjusted offensive and defensive yards per play. These results are consistent with the findings from the previously conducted ANOVA testing, and the p-values for the Kruskal-Wallis tests and the earlier ANOVA tests are very similar.
+
+Now, we can proceed to perform follow-up multiple comparisons procedures to determine which cross-conference differences are statistically significant. A box plot can help us visualize these differences.
+
+```{r, echo=FALSE, fig.width = 5, fig.height=3, fig.align='center'}
+median_off <- adv_data %>%
+  group_by(Conference) %>%
+  summarize(median_off = median(TotOff))
+
+median_def <- adv_data %>%
+  group_by(Conference) %>%
+  summarize(median_def = median(TotDef))
+
+median_data <- merge(median_off, median_def, by = "Conference")
+
+
+median_data_off <- median_data[order(-median_data$median_off), ]
+adv_data$Conference <- factor(adv_data$Conference, levels = median_data_off$Conference)
+
+ggplot(adv_data, aes(x = Conference, y = TotOff)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Adjusted Offensive Yards per Play",
+       x = "Conference",
+       y = "Adjusted Offensive Yards per Play")
+
+
+median_data_def <- median_data[order(median_data$median_def), ]
+adv_data$Conference <- factor(adv_data$Conference, levels = median_data_def$Conference)
+
+ggplot(adv_data, aes(x = Conference, y = TotDef)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Adjusted Defensive Yards per Play",
+       x = "Conference",
+       y = "Adjusted Defensive Yards per Play")
+```
+```{r, echo=F}
+kruskalmc(adv_data$TotOff, adv_data$Conference)
+kruskalmc(adv_data$TotDef, adv_data$Conference)
+```
+There is a significant difference in offensive data between the SEC and both the Big Ten and ACC, as well as a significant difference between the Big Ten and the Big 12. The median adjusted yards per play for defensive data in the SEC is significantly different from that in the Big 12, ACC, and the Pac-12. Additionally, the median of the Big Ten is significantly different from that of the Pac-12.
+
+Interestingly, for the offensive data, these are exactly the same results we observed when conducting Tukey's HSD testing. In terms of the offensive data, we observed that the SEC significantly outperformed the ACC and the Big Ten, but not the Big 12 or Pac-12. Additionally, we observed that the Big 12 also significantly outperformed the Big Ten. Apart from that, no other significant differences were observed.
+
+In terms of defensive data, we observed that the SEC significantly outperformed every conference except for the Big Ten. However, in this non-parametric setting, it was also determined that the Big Ten significantly outperformed the Pac-12, a result not observed in the original HSD testing. This could be due to the narrow margin between the observed value and the critical value for the difference in the median performance of the Big Ten and the Pac-12. If a more lenient version of Tukey's HSD, such as Fisher's LSD, had been used, it is possible that this additional difference could have been observed in the parametric setting.
+
+# Discussion
+
+Conferences, after all, consist of teams. The data were selected to go back only to 2014, as this marked the end of the early 2010s conference realignment era and also predates the demise of the Pac-12 and the power 5 landscape as we know it. So, with the exception of Notre Dame in the COVID year and the teams added to the Big 12 in 2023, the composition of the conferences remained constant throughout the entire dataset. If our objective is to predict yards per game or opponent-adjusted yards per play, is it important to consider the conference a team belongs to, or is knowing the school sufficient? In the case of our dataset, we cannot draw a definitive conclusion on that matter. If we create a model based on our teams, adding a variable to account for the conference adds no value, as teams are inextricably linked to their conference. Further analysis may be warranted 5 or 10 years into the future, when teams like Oregon and Washington will have moved to the Big Ten, and west coast teams like Cal and Stanford begin playing in the Atlantic Coast Conference. Then, we can determine whether the conference had an impact on the productivity or success of their offenses, or if it was solely dependent on the school.
+
+Based on our data, it seems that we can conclude that the SEC is the most dominant conference overall. This is anecdotally evident from their track record of national success over the past 25 years, particularly with the dominance demonstrated by Alabama and Georgia over the period covered by the dataset. In terms of adjusted offensive yards per play, the SEC had the highest median, but it was not statistically significantly different from the Pac-12 and Big 12. However, these offensive numbers were accumulated against some of the best defenses in the country. The SEC stood out from the rest of the conferences, except for the Big Ten, in terms of adjusted defensive yards per play. Meanwhile, the vaunted Big Ten defenses did not perform significantly differently than those of any other conference in terms of adjusted yards per play.
+
+In the aggregate setting, the Big Ten stood out from the other conferences in terms of total defensive yards allowed per game. Additionally, the Big Ten had the lowest median offensive output per game, although it did not appear significantly different from the output of the ACC and the SEC. While the Big Ten may boast impressive defenses on paper, they could just be a reflection of plain bad offenses. Our analysis with the adjusted metrics supports this claim. The Big Ten failed to distinguish itself in adjusted defensive yards per play and ranked in the lowest tier of adjusted offensive production, along with the Pac-12 and the ACC.
+
+Without a clear definition of "explosiveness," which, as argued earlier, involves a combination of yards per play and the number of plays run throughout a game, it is difficult to determine which conference was the clear leader in explosive production. It is evident that the Big Ten allowed the fewest yards per game, but that is the only confident conclusion we can draw from this analysis. The SEC had the best overall adjusted performance, but how much of that is influenced by how highly Sports Reference thinks of SEC teams? Perhaps their adjustment was biased towards SEC schools instead of Pac-12 and Big 12 schools, for example, and that is why they found themselves at the top of both adjusted offensive and defensive metric scores.
+
+With a dataset like the one used for this analysis, numerous questions remain unanswered, and many additional analyses could be conducted to provide a more accurate depiction of offensive and defensive production. As we venture into a new conference alignment, it will be intriguing to observe how offensive strategies evolve. Will Oregon and Washington need to adopt a more physical style of football now that they are in the Big Ten? Will Texas and Oklahoma maintain their success when they join the SEC, which is almost certainly a tougher conference than the Big 12? It is also important to note that the school itself does not necessarily dictate a team's playing style. Nebraska and Oklahoma no longer run the wishbone offense that led them to success throughout the 1970s. That is a result of a change in the overall philosophy of football, with offensive formations spreading out over time to allow for quarterbacks to air the ball out with more confidence as they can better assess the defense's coverage package before the snap. An analysis of past data would also prove interesting for the schools involved in this analysis. Did the offensive success of the schools in the modern SEC and Big 12 also occur in the 1980s and 1990s in the Big 8 and the Southwest Conference?
+
+Lastly, the evolving landscape of NIL will undoubtedly impact these figures in the future. Likely, schools that are able to offer tens of millions of dollars to recruits and transfers will be able to secure commitments from better athletes than those that are unable to do so. The amount of money available to these schools is not dependent on the conference they belong to. Football powerhouses such as Alabama, Ohio State, and Texas are forming extensive networks of donors and contributing substantial funds to attract recruits and sustain the competitiveness of their programs heading into the future. Despite a school like Vanderbilt's presence in the SEC, it is unlikely to see them handing out millions of dollars to football recruits. In five or ten years, various types of regression analysis can be conducted to assess the impact that this level of spending has had and will continue to have on on-field performance.
+
+# GitHub Repository
+A GitHub repository containing all of the code and data used in this project can be found at https://github.com/caelmore/Stat216-FinalProject.
